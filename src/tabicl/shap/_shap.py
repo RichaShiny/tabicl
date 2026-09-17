@@ -1,9 +1,12 @@
 """SHAP explanations for TabICL.
 
-This module uses a single all-NaN row as the SHAP background. NaN values
-are handled by TabICL's normal preprocessing (mean imputation for numeric
-features, missing-category encoding for numerically-encoded categoricals),
-providing a natural missing-value baseline for feature attribution.
+By default, this module uses a single all-NaN row as the SHAP background.
+NaN values are handled by TabICL's normal preprocessing (mean imputation for
+numeric features, missing-category encoding for numerically-encoded
+categoricals), providing a natural missing-value baseline for feature
+attribution. Users can instead pass numeric background data explicitly via
+``X_background`` when they want SHAP expectations anchored to a reference
+sample from their data distribution.
 
 Note: String/object categorical features must be numerically encoded before
 calling get_shap_values (e.g., via pandas' get_dummies or sklearn's
@@ -29,7 +32,36 @@ import numpy as np
 import shap
 
 
-def get_shap_values(estimator: Any, X_test: np.ndarray, attribute_names: list[str] | None = None, **kwargs: Any) -> Any:
+def _validate_background(X_background: Any, n_features: int) -> np.ndarray:
+    """Convert user-provided SHAP background data to a validated numeric array."""
+    try:
+        background = np.asarray(X_background, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            "X_background must contain numeric data. Encode categorical features "
+            "using the same numeric representation used to fit the estimator."
+        ) from exc
+
+    if background.ndim != 2:
+        raise ValueError("X_background must be a two-dimensional array-like object.")
+    if background.shape[0] == 0:
+        raise ValueError("X_background must contain at least one background sample.")
+    if background.shape[1] != n_features:
+        raise ValueError(
+            "X_background must have the same number of features as the samples "
+            f"being explained: expected {n_features}, got {background.shape[1]}."
+        )
+
+    return background
+
+
+def get_shap_values(
+    estimator: Any,
+    X_test: np.ndarray,
+    attribute_names: list[str] | None = None,
+    X_background: Any | None = None,
+    **kwargs: Any,
+) -> Any:
     """Compute SHAP values for a fitted estimator.
 
     Parameters
@@ -42,6 +74,12 @@ def get_shap_values(estimator: Any, X_test: np.ndarray, attribute_names: list[st
 
     attribute_names : list of str, optional
         Feature names (inferred from DataFrame columns when possible).
+
+    X_background : array-like or DataFrame, optional
+        Numeric reference samples used as the SHAP background distribution.
+        Must have the same number of features as ``X_test``. If omitted, a
+        single all-NaN row is used for backwards-compatible missing-value
+        baseline behavior.
 
     **kwargs
         Forwarded to :func:`get_shap_explainer`.
@@ -64,7 +102,13 @@ def get_shap_values(estimator: Any, X_test: np.ndarray, attribute_names: list[st
         ) from exc
 
     predict_fn = "predict_proba" if hasattr(estimator, "predict_proba") else "predict"
-    explainer = get_shap_explainer(estimator, X_np, predict_fn=predict_fn, **kwargs)
+    explainer = get_shap_explainer(
+        estimator,
+        X_np,
+        predict_fn=predict_fn,
+        X_background=X_background,
+        **kwargs,
+    )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*does not have valid feature names.*")
         sv = explainer(X_np)
@@ -75,9 +119,13 @@ def get_shap_values(estimator: Any, X_test: np.ndarray, attribute_names: list[st
 
 
 def get_shap_explainer(
-    estimator: Any, X: np.ndarray, predict_fn: str | Callable = "predict_proba", **kwargs: Any
+    estimator: Any,
+    X: np.ndarray,
+    predict_fn: str | Callable = "predict_proba",
+    X_background: Any | None = None,
+    **kwargs: Any,
 ) -> Any:
-    """Build a ``shap.Explainer`` with an all-NaN background.
+    """Build a ``shap.Explainer`` with configurable background data.
 
     Parameters
     ----------
@@ -90,6 +138,11 @@ def get_shap_explainer(
     predict_fn : str or callable, default="predict_proba"
         Prediction method; resolved via ``getattr`` when a string.
 
+    X_background : array-like or DataFrame, optional
+        Numeric reference samples passed to ``shap.Explainer`` as the
+        background distribution. Must have the same number of features as
+        ``X``. If omitted, a single all-NaN row is used.
+
     **kwargs
         Forwarded to ``shap.Explainer``.
 
@@ -100,7 +153,13 @@ def get_shap_explainer(
     if isinstance(predict_fn, str):
         predict_fn = getattr(estimator, predict_fn)
 
-    return shap.Explainer(predict_fn, np.full((1, X.shape[1]), np.nan), **kwargs)
+    n_features = X.shape[1]
+    if X_background is None:
+        background = np.full((1, n_features), np.nan)
+    else:
+        background = _validate_background(X_background, n_features)
+
+    return shap.Explainer(predict_fn, background, **kwargs)
 
 
 # ── visualisation helpers ───────────────────────────────────────────────

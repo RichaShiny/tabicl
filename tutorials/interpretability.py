@@ -62,8 +62,20 @@ clf.fit(X_train, y_train)
 
 from tabicl.shap import get_shap_values, plot_shap
 
-# Compute the shap values
+# Compute the shap values. By default, TabICL uses one all-NaN row as the
+# background, preserving the package's missing-value baseline behavior.
 sv = get_shap_values(clf, X_test[:10])
+
+# %%
+# A data-derived SHAP background can be supplied when the explanation should be
+# anchored to a reference sample from the observed feature distribution instead.
+# Keep the background reasonably small because SHAP evaluates against these rows.
+background = X_train.sample(n=min(50, len(X_train)), random_state=0)
+sv_with_background = get_shap_values(
+    clf,
+    X_test[:10],
+    X_background=background,
+)
 
 # %%
 # Bar plot of mean absolute SHAP values, showing aggregate feature importances
